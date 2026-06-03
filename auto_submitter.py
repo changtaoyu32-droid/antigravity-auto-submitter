@@ -63,40 +63,26 @@ upper_blue = np.array([135, 255, 255])
 exit_flag = False
 is_paused = False  # 全局暂停标志
 
-def get_vscode_windows():
-    """使用 Win32 原生 API 遍历并抓取屏幕上所有开发白名单窗口（VS Code/Cursor/Windsurf/反重力）的绝对几何坐标范围"""
-    windows = []
-    
-    # 使用 Python 原生 ctypes 调用 Windows Win32 API，保证最高兼容性和权限穿透力
-    def enum_windows_callback(hwnd, lParam):
-        try:
-            if ctypes.windll.user32.IsWindowVisible(hwnd):
-                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buffer = ctypes.create_unicode_buffer(length + 1)
-                    ctypes.windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
-                    title = buffer.value.lower()
-                    
-                    keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
-                    if any(kw in title for kw in keywords):
-                        rect = wintypes.RECT()
-                        if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                            w = rect.right - rect.left
-                            h = rect.bottom - rect.top
-                            if w > 100 and h > 100:
-                                windows.append((rect.left, rect.top, rect.right, rect.bottom))
-        except Exception:
-            pass
-        return True
-
+def get_active_window_rect_and_title():
+    """使用 Win32 原生 API 获取当前最前台活动窗口的 Rect 和标题，保证 100% 成功率与进程穿透性"""
     try:
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        enum_proc = WNDENUMPROC(enum_windows_callback)
-        ctypes.windll.user32.EnumWindows(enum_proc, 0)
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return None, ""
+            
+        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        title = ""
+        if length > 0:
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
+            title = buffer.value.lower()
+            
+        rect = wintypes.RECT()
+        if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return (rect.left, rect.top, rect.right, rect.bottom), title
     except Exception:
         pass
-        
-    return windows
+    return None, ""
 
 def is_point_in_windows(x, y, window_list):
     """判断某个物理坐标 (x, y) 是否落在白名单开发窗口的边界范围内"""
@@ -259,11 +245,11 @@ def monitor_loop(is_silent=False):
     if not is_silent:
         print("\n[监控] 智能自适应全屏扫描已开启。")
         print("正在持续扫描屏幕以定位 [Submit] 或 [Retry] 按钮...")
-        print("暂停控制: 按键盘上的 [+] 键即可随时 [暂停/恢复] 自动监控服务")
-        print("退出服务: 随时在控制台按 [Ctrl + C] 即可安全退出测试模式")
+        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口限定")
         print("=" * 60)
         
     last_diagnose_time = 0
+    screen_width, screen_height = pyautogui.size()
     
     while not exit_flag:
         try:
@@ -271,46 +257,74 @@ def monitor_loop(is_silent=False):
                 time.sleep(0.5)
                 continue
                 
-            # 查找所有蓝色色块（带过滤的和没过滤的）
             all_detected = find_blue_buttons(diagnose=True)
             valid_btns = [b for b in all_detected if b["geom_error"] is None]
             
             valid_btn_found = False
             if len(valid_btns) > 0:
-                dev_windows = get_vscode_windows()
+                # 获取当前处于前台焦点的窗口
+                active_rect, active_title = get_active_window_rect_and_title()
                 
-                # 方案 A：白名单窗口存在，严格匹配
-                if len(dev_windows) > 0:
-                    for btn in valid_btns:
-                        cx, cy = btn["abs_center"]
-                        w, h = btn["size"]
-                        if is_point_in_windows(cx, cy, dev_windows):
-                            if not is_silent:
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] [定位] 定位到白名单窗口区域内的目标按钮! 坐标: ({cx}, {cy})，尺寸: {w}x{h}")
-                            execute_click_with_fallback(btn)
-                            valid_btn_found = True
-                            break
-                # 方案 B：没有检索到白名单窗口（权限限制或窗口标题不符），启用保底直接点击机制
-                else:
-                    btn = valid_btns[0]
+                # 检查前台活动窗口是否属于白名单开发工具
+                keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
+                is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+                
+                for btn in valid_btns:
                     cx, cy = btn["abs_center"]
                     w, h = btn["size"]
+                    
+                    # 第一重保险：避让屏幕最底部的 Windows 任务栏区域（天气栏、右下角系统托盘），防止误触
+                    if cy > (screen_height - 75):
+                        continue
+                        
+                    # 第二重保险：前台活动窗口约束
+                    # 如果用户当前正在反重力/VS Code中编写代码或挂机运行：按钮坐标必须在前台窗口的矩形范围内
+                    # 如果当前最前台不是反重力/VS Code（比如切去浏览器查资料），则进入安全退避，暂时不点击，100%防误触
+                    if is_active_dev and active_rect:
+                        left, top, right, bottom = active_rect
+                        if not (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5):
+                            continue
+                    elif not is_active_dev:
+                        # 活动窗口是非开发类窗口，暂时静默忽略
+                        continue
+                        
+                    # 通过所有安全策略，执行点击
                     if not is_silent:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] [警告] 未检测到白名单窗口，启动保底确认，坐标: ({cx}, {cy})，尺寸: {w}x{h}")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] [定位] 成功定位到开发窗口范围内的目标按钮! 坐标: ({cx}, {cy})，尺寸: {w}x{h}")
                     execute_click_with_fallback(btn)
                     valid_btn_found = True
+                    break
             
-            # 前台测试模式下的诊断限频输出（每3秒打印一次被几何条件过滤掉的疑似蓝色块）
+            # 前台测试模式下的诊断限频输出
             if not is_silent and not valid_btn_found and (time.time() - last_diagnose_time > 3.0):
                 filtered_btns = [b for b in all_detected if b["geom_error"] is not None]
+                active_rect, active_title = get_active_window_rect_and_title()
+                keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
+                is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+                
+                taskbar_filtered = 0
+                bg_filtered = 0
+                
+                for btn in valid_btns:
+                    cx, cy = btn["abs_center"]
+                    if cy > (screen_height - 75):
+                        taskbar_filtered += 1
+                    elif not is_active_dev:
+                        bg_filtered += 1
+                    elif active_rect:
+                        left, top, right, bottom = active_rect
+                        if not (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5):
+                            bg_filtered += 1
+                            
+                if taskbar_filtered > 0 or bg_filtered > 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [安全] 拦截到 {taskbar_filtered} 个系统任务栏蓝色色块，拦截到 {bg_filtered} 个非前台活动开发窗口的疑似色块。")
+                    
                 if len(filtered_btns) > 0:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] [诊断] 屏幕上存在 {len(filtered_btns)} 个被几何条件过滤的蓝色块:")
-                    for idx, fb in enumerate(filtered_btns[:3]):
+                    for idx, fb in enumerate(filtered_btns[:2]):
                         cx, cy = fb["abs_center"]
                         w, h = fb["size"]
                         print(f"  - 疑似块 #{idx+1}: 中心({cx}, {cy}), 宽高({w}x{h}), 过滤原因: {fb['geom_error']}")
-                    if len(filtered_btns) > 3:
-                        print(f"  - 还有 {len(filtered_btns) - 3} 个相似色块已省略...")
                     last_diagnose_time = time.time()
                         
             if valid_btn_found:
@@ -393,16 +407,21 @@ def generate_diagnose_report():
         mask = cv2.inRange(hsv, lower_blue, upper_blue)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        dev_windows = get_vscode_windows()
+        active_rect, active_title = get_active_window_rect_and_title()
+        keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
+        is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+        
         diagnose_img = img.copy()
+        screen_width, screen_height = pyautogui.size()
         
         report_lines = []
         report_lines.append("=== 自动点击与重试工具诊断报告 ===")
         report_lines.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         report_lines.append(f"屏幕物理分辨率: {img.shape[1]}x{img.shape[0]}")
-        report_lines.append(f"检测到的开发窗口白名单数量: {len(dev_windows)}")
-        for i, (left, top, right, bottom) in enumerate(dev_windows):
-            report_lines.append(f"  - 窗口 #{i+1}: Left={left}, Top={top}, Right={right}, Bottom={bottom}")
+        report_lines.append(f"当前最前台活动窗口: Title=\"{active_title}\"")
+        if active_rect:
+            report_lines.append(f"  - 前台窗口范围: Left={active_rect[0]}, Top={active_rect[1]}, Right={active_rect[2]}, Bottom={active_rect[3]}")
+        report_lines.append(f"  - 最前台是否属于开发工具白名单: {'是' if is_active_dev else '否'}")
             
         report_lines.append(f"\n检测到符合 HSV 蓝色区间的色块数量: {len(contours)}")
         
@@ -415,8 +434,14 @@ def generate_diagnose_report():
             cy = y + (h // 2)
             
             geom_error = check_geometry(w, h, aspect_ratio, area)
-            in_window = is_point_in_windows(cx, cy, dev_windows)
             
+            # 安全逻辑检测
+            in_taskbar = cy > (screen_height - 75)
+            in_foreground = False
+            if active_rect:
+                left, top, right, bottom = active_rect
+                in_foreground = (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5)
+                
             report_lines.append(f"\n[色块 #{idx+1}]")
             report_lines.append(f"  - 坐标: 左上角 ({x}, {y})，中心点 ({cx}, {cy})")
             report_lines.append(f"  - 数据: 宽度={w}, 高度={h}, 宽高比={aspect_ratio:.2f}, 面积={area}")
@@ -424,11 +449,13 @@ def generate_diagnose_report():
                 report_lines.append(f"  - 几何过滤: 失败 (原因: {geom_error})")
             else:
                 report_lines.append("  - 几何过滤: 通过")
-            report_lines.append(f"  - 是否在反重力/VS Code边界内: {'是' if in_window else '否'}")
+                
+            report_lines.append(f"  - 是否处于底部系统任务栏区域: {'是 (已被拦截安全排他)' if in_taskbar else '否'}")
+            report_lines.append(f"  - 是否处于最前台活动开发窗口内: {'是' if in_foreground else '否'}")
             
-            # 通过的画绿框，不通过的画红框
-            # 如果没有白名单窗口，则通过几何校验的直接作为绿框标记
-            is_valid = geom_error is None and (in_window or len(dev_windows) == 0)
+            # 计算最终点击判定
+            is_valid = geom_error is None and not in_taskbar and (in_foreground or not is_active_dev)
+            
             color = (0, 255, 0) if is_valid else (0, 0, 255)
             cv2.rectangle(diagnose_img, (x, y), (x + w, y + h), color, 2)
             cv2.putText(diagnose_img, f"#{idx+1} {w}x{h} {'OK' if is_valid else 'ERR'}", (x, max(y - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
@@ -436,7 +463,7 @@ def generate_diagnose_report():
             if is_valid:
                 match_count += 1
                 
-        report_lines.append(f"\n最终通过所有校验的可用按钮数量 (含保底机制): {match_count}")
+        report_lines.append(f"\n最终通过所有安全双重保险的可用按钮数量: {match_count}")
         
         desktop_dir = os.path.join(os.environ["USERPROFILE"], "Desktop")
         report_file = os.path.join(desktop_dir, "submitter_diagnose_report.txt")
