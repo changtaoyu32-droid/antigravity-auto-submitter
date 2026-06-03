@@ -245,7 +245,7 @@ def monitor_loop(is_silent=False):
     if not is_silent:
         print("\n[监控] 智能自适应全屏扫描已开启。")
         print("正在持续扫描屏幕以定位 [Submit] 或 [Retry] 按钮...")
-        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口限定")
+        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口限定 (前台调试豁免)")
         print("=" * 60)
         
     last_diagnose_time = 0
@@ -257,17 +257,24 @@ def monitor_loop(is_silent=False):
                 time.sleep(0.5)
                 continue
                 
+            # 查找所有蓝色色块（带过滤的和没过滤的）
             all_detected = find_blue_buttons(diagnose=True)
             valid_btns = [b for b in all_detected if b["geom_error"] is None]
             
             valid_btn_found = False
             if len(valid_btns) > 0:
-                # 获取当前处于前台焦点的窗口
+                # 获取当前最前台活动窗口
                 active_rect, active_title = get_active_window_rect_and_title()
                 
                 # 检查前台活动窗口是否属于白名单开发工具
                 keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
                 is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+                
+                # 特殊豁免：如果前台是本小助手管理器（中英文标题匹配），放开前台局限性（方便前台测试模式）
+                is_manager_active = False
+                if active_title:
+                    manager_keywords = ["auto submitter manager", "auto_submitter", "自动提交一键配置", "自动点击"]
+                    is_manager_active = any(kw in active_title for kw in manager_keywords)
                 
                 for btn in valid_btns:
                     cx, cy = btn["abs_center"]
@@ -278,14 +285,16 @@ def monitor_loop(is_silent=False):
                         continue
                         
                     # 第二重保险：前台活动窗口约束
+                    # 如果前台是本管理器本身，则予以豁免放行，直接触发点击（解决前台测试黑框挡住焦点窗口的问题）
+                    if is_manager_active:
+                        pass
                     # 如果用户当前正在反重力/VS Code中编写代码或挂机运行：按钮坐标必须在前台窗口的矩形范围内
-                    # 如果当前最前台不是反重力/VS Code（比如切去浏览器查资料），则进入安全退避，暂时不点击，100%防误触
-                    if is_active_dev and active_rect:
+                    elif is_active_dev and active_rect:
                         left, top, right, bottom = active_rect
                         if not (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5):
                             continue
-                    elif not is_active_dev:
-                        # 活动窗口是非开发类窗口，暂时静默忽略
+                    else:
+                        # 当前最前台是浏览器、微信等非开发无关窗口，执行安全退避，暂时忽略点击
                         continue
                         
                     # 通过所有安全策略，执行点击
@@ -302,6 +311,9 @@ def monitor_loop(is_silent=False):
                 keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
                 is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
                 
+                manager_keywords = ["auto submitter manager", "auto_submitter", "自动提交一键配置", "自动点击"]
+                is_manager_active = any(kw in active_title for kw in manager_keywords) if active_title else False
+                
                 taskbar_filtered = 0
                 bg_filtered = 0
                 
@@ -309,9 +321,9 @@ def monitor_loop(is_silent=False):
                     cx, cy = btn["abs_center"]
                     if cy > (screen_height - 75):
                         taskbar_filtered += 1
-                    elif not is_active_dev:
+                    elif not is_active_dev and not is_manager_active:
                         bg_filtered += 1
-                    elif active_rect:
+                    elif is_active_dev and active_rect:
                         left, top, right, bottom = active_rect
                         if not (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5):
                             bg_filtered += 1
@@ -411,6 +423,9 @@ def generate_diagnose_report():
         keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
         is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
         
+        manager_keywords = ["auto submitter manager", "auto_submitter", "自动提交一键配置", "自动点击"]
+        is_manager_active = any(kw in active_title for kw in manager_keywords) if active_title else False
+        
         diagnose_img = img.copy()
         screen_width, screen_height = pyautogui.size()
         
@@ -422,6 +437,7 @@ def generate_diagnose_report():
         if active_rect:
             report_lines.append(f"  - 前台窗口范围: Left={active_rect[0]}, Top={active_rect[1]}, Right={active_rect[2]}, Bottom={active_rect[3]}")
         report_lines.append(f"  - 最前台是否属于开发工具白名单: {'是' if is_active_dev else '否'}")
+        report_lines.append(f"  - 最前台是否为本小助手管理器: {'是 (享受前台测试特殊豁免)' if is_manager_active else '否'}")
             
         report_lines.append(f"\n检测到符合 HSV 蓝色区间的色块数量: {len(contours)}")
         
@@ -454,7 +470,7 @@ def generate_diagnose_report():
             report_lines.append(f"  - 是否处于最前台活动开发窗口内: {'是' if in_foreground else '否'}")
             
             # 计算最终点击判定
-            is_valid = geom_error is None and not in_taskbar and (in_foreground or not is_active_dev)
+            is_valid = geom_error is None and not in_taskbar and (in_foreground or is_manager_active or not is_active_dev)
             
             color = (0, 255, 0) if is_valid else (0, 0, 255)
             cv2.rectangle(diagnose_img, (x, y), (x + w, y + h), color, 2)
@@ -495,7 +511,7 @@ def show_interactive_menu():
         print("  安全技术: 物理像素1:1对齐 + 后台静默投递 + 键盘物理回车保底")
         print("============================================================")
         print("  [1] 立即启动后台监控服务 (完全静默 / 无黑窗后台运行)")
-        print("  [2] 立即停止后台监控服务 (关闭正在运行的后台服务)")
+        print("  [2] 立即停止后台监控服务 (关闭正在运行 we 后台服务)")
         print("  [3] 开启开机自动启动 (每次开机后自动在后台挂起监控)")
         print("  [4] 关闭开机自动启动 (移除开机自启配置)")
         print("  [5] 运行前台测试模式 (当前窗口直接运行并显示检测日志)")
