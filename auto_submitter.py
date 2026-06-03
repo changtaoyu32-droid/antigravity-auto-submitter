@@ -63,12 +63,38 @@ upper_blue = np.array([135, 255, 255])
 exit_flag = False
 is_paused = False  # 全局暂停标志
 
-def get_active_window_rect_and_title():
-    """使用 Win32 原生 API 获取当前最前台活动窗口的 Rect 和标题，保证 100% 成功率与进程穿透性"""
+PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_VM_READ = 0x0010
+
+def get_process_name_by_hwnd(hwnd):
+    """通过窗口句柄获取其所属进程的可执行文件文件名（例如 Antigravity.exe, Code.exe）"""
+    try:
+        process_id = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if process_id.value == 0:
+            return "unknown"
+            
+        hProcess = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, process_id.value)
+        if not hProcess:
+            return "unknown"
+            
+        try:
+            size = wintypes.DWORD(260)
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.kernel32.QueryFullProcessImageNameW(hProcess, 0, buf, ctypes.byref(size)):
+                return buf.value.split("\\")[-1].lower()
+        finally:
+            ctypes.windll.kernel32.CloseHandle(hProcess)
+    except Exception:
+        pass
+    return "unknown"
+
+def get_active_window_rect_title_and_process():
+    """使用 Win32 原生 API 实时获取最前台窗口的 Rect、标题和进程可执行文件名，保证 100% 成功率与进程穿透性"""
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         if not hwnd:
-            return None, ""
+            return None, "", "unknown"
             
         length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
         title = ""
@@ -79,10 +105,53 @@ def get_active_window_rect_and_title():
             
         rect = wintypes.RECT()
         if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return (rect.left, rect.top, rect.right, rect.bottom), title
+            pname = get_process_name_by_hwnd(hwnd)
+            return (rect.left, rect.top, rect.right, rect.bottom), title, pname
     except Exception:
         pass
-    return None, ""
+    return None, "", "unknown"
+
+def get_vscode_windows():
+    """使用 Win32 原生 API 配合进程映像名称识别，抓取屏幕上所有白名单开发窗口的绝对几何坐标范围"""
+    windows = []
+    
+    def enum_windows_callback(hwnd, lParam):
+        try:
+            if ctypes.windll.user32.IsWindowVisible(hwnd):
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                title = ""
+                if length > 0:
+                    buffer = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
+                    title = buffer.value.lower()
+                    
+                pname = get_process_name_by_hwnd(hwnd)
+                
+                # 双重校验：窗口标题包含开发软件关键字，或者进程名称为白名单进程
+                keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
+                dev_processes = ["code.exe", "cursor.exe", "windsurf.exe", "antigravity.exe"]
+                
+                is_dev = any(kw in title for kw in keywords) or any(p in pname for p in dev_processes)
+                
+                if is_dev:
+                    rect = wintypes.RECT()
+                    if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        w = rect.right - rect.left
+                        h = rect.bottom - rect.top
+                        if w > 100 and h > 100:
+                            windows.append((rect.left, rect.top, rect.right, rect.bottom))
+        except Exception:
+            pass
+        return True
+
+    try:
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        enum_proc = WNDENUMPROC(enum_windows_callback)
+        ctypes.windll.user32.EnumWindows(enum_proc, 0)
+    except Exception:
+        pass
+        
+    return windows
 
 def is_point_in_windows(x, y, window_list):
     """判断某个物理坐标 (x, y) 是否落在白名单开发窗口的边界范围内"""
@@ -193,12 +262,35 @@ def find_blue_buttons(diagnose=False):
                 if geom_error is None:
                     buttons.append(btn_data)
         return buttons
-    except Exception:
-        return []
+    except Exception as e:
+        print(f"[错误] 检索蓝色按钮失败: {e}")
+        return None
+
+
+def check_local_blue_exists(cx, cy, w, h):
+    """检测屏幕上以 (cx, cy) 为中心，宽高为 (w, h) 的局部区域内是否依然存在蓝色像素"""
+    try:
+        pad = 10
+        left = max(0, cx - (w // 2) - pad)
+        top = max(0, cy - (h // 2) - pad)
+        width = w + 2 * pad
+        height = h + 2 * pad
+        
+        screenshot = pyautogui.screenshot(region=(left, top, width, height))
+        img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        
+        mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        blue_pixel_count = np.sum(mask > 0)
+        return blue_pixel_count > 50, blue_pixel_count
+    except Exception as e:
+        print(f"[警告] 局部蓝色检测发生异常: {e}")
+        return True, -1
 
 def execute_click_with_fallback(btn_info):
     """底层消息点击 + 静默回车 + 物理激活与 Enter 按键强送 的三层保障方案"""
     cx, cy = btn_info["abs_center"]
+    w, h = btn_info["size"]
     
     # 第一层：后台静默直接点击
     background_click(cx, cy)
@@ -213,11 +305,24 @@ def execute_click_with_fallback(btn_info):
     # 重新检测该按钮是否依然存在
     recheck_btns = find_blue_buttons()
     still_exists = False
-    for r_btn in recheck_btns:
-        rcx, rcy = r_btn["abs_center"]
-        if abs(rcx - cx) < 15 and abs(rcy - cy) < 15:
+    
+    # 1. 首先尝试从全局按钮列表中匹配
+    if recheck_btns is not None:
+        for r_btn in recheck_btns:
+            rcx, rcy = r_btn["abs_center"]
+            if abs(rcx - cx) < 15 and abs(rcy - cy) < 15:
+                still_exists = True
+                break
+    else:
+        # 如果全局检测抛出异常，保守起见认为按钮依然存在
+        still_exists = True
+
+    # 2. 第二重验证：如果全局列表中没找到，使用局部蓝色像素比对（防止变色、几何畸变等导致的漏检）
+    if not still_exists:
+        local_blue, pixel_count = check_local_blue_exists(cx, cy, w, h)
+        if local_blue:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [诊断] 全局未匹配到按钮，但局部检测到 {pixel_count} 个蓝色像素，判定按钮依然存在。")
             still_exists = True
-            break
             
     if still_exists:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [警告] 静默确认未生效，执行 1:1 DPI 物理激活并强送物理 Enter 回车...")
@@ -245,7 +350,7 @@ def monitor_loop(is_silent=False):
     if not is_silent:
         print("\n[监控] 智能自适应全屏扫描已开启。")
         print("正在持续扫描屏幕以定位 [Submit] 或 [Retry] 按钮...")
-        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口限定 (前台调试与后台静默豁免)")
+        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口/进程限定 (前台调试与后台静默豁免)")
         print("=" * 60)
         
     last_diagnose_time = 0
@@ -259,16 +364,22 @@ def monitor_loop(is_silent=False):
                 
             # 查找所有蓝色色块（带过滤的和没过滤的）
             all_detected = find_blue_buttons(diagnose=True)
+            if all_detected is None:
+                time.sleep(0.5)
+                continue
             valid_btns = [b for b in all_detected if b["geom_error"] is None]
+
             
             valid_btn_found = False
             if len(valid_btns) > 0:
-                # 获取当前最前台活动窗口
-                active_rect, active_title = get_active_window_rect_and_title()
+                # 获取当前最前台活动窗口数据
+                active_rect, active_title, active_process = get_active_window_rect_title_and_process()
                 
-                # 检查前台活动窗口是否属于白名单开发工具
+                # 双重校验：窗口标题包含开发软件关键字，或者进程名称为白名单进程
                 keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
-                is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+                dev_processes = ["code.exe", "cursor.exe", "windsurf.exe", "antigravity.exe"]
+                
+                is_active_dev = any(kw in active_title for kw in keywords) or any(p in active_process for p in dev_processes)
                 
                 # 特殊豁免：如果前台是本小助手管理器（中英文标题匹配），放开前台局限性（方便前台测试模式）
                 is_manager_active = False
@@ -285,9 +396,9 @@ def monitor_loop(is_silent=False):
                         continue
                         
                     # 第二重保险：前台活动窗口约束
-                    # 1. 豁免情况一：当前前台活动窗口标题获取为空（隐藏后台Hidden常驻运行时，由于安全隔离常常读取标题为空）
-                    # 2. 豁免情况二：当前前台窗口是小助手控制台本身（方便前台测试调试）
-                    # 3. 校验情况：若前台是开发工具（VS Code / 反重力），按钮必须在窗口范围内，绝对防止偏离点击
+                    # 1. 豁免情况一：当前前台活动窗口标题获取为空（隐藏后台运行或挂起状态，因安全隔离可能读取标题为空）
+                    # 2. 豁免情况二：当前前台窗口是小助手控制台本身（前台测试）
+                    # 3. 校验情况：若前台是开发工具（VS Code / 反重力），按钮坐标必须在窗口范围内
                     # 4. 拦截情况：若前台是明确的第三方非开发窗口（如 Chrome 浏览器，微信等），小助手退避保护，暂时忽略
                     if not active_title:
                         pass
@@ -298,7 +409,7 @@ def monitor_loop(is_silent=False):
                         if not (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5):
                             continue
                     else:
-                        # 焦点在第三方无关窗口，进入安全退避状态
+                        # 焦点在无关第三方应用上，进入安全避让状态
                         continue
                         
                     # 通过所有安全策略，执行点击
@@ -311,9 +422,11 @@ def monitor_loop(is_silent=False):
             # 前台测试模式下的诊断限频输出
             if not is_silent and not valid_btn_found and (time.time() - last_diagnose_time > 3.0):
                 filtered_btns = [b for b in all_detected if b["geom_error"] is not None]
-                active_rect, active_title = get_active_window_rect_and_title()
+                active_rect, active_title, active_process = get_active_window_rect_title_and_process()
                 keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
-                is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+                dev_processes = ["code.exe", "cursor.exe", "windsurf.exe", "antigravity.exe"]
+                
+                is_active_dev = any(kw in active_title for kw in keywords) or any(p in active_process for p in dev_processes)
                 
                 manager_keywords = ["auto submitter manager", "auto_submitter", "自动提交一键配置", "自动点击"]
                 is_manager_active = any(kw in active_title for kw in manager_keywords) if active_title else False
@@ -423,9 +536,11 @@ def generate_diagnose_report():
         mask = cv2.inRange(hsv, lower_blue, upper_blue)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        active_rect, active_title = get_active_window_rect_and_title()
+        active_rect, active_title, active_process = get_active_window_rect_title_and_process()
         keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
-        is_active_dev = any(kw in active_title for kw in keywords) if active_title else False
+        dev_processes = ["code.exe", "cursor.exe", "windsurf.exe", "antigravity.exe"]
+        
+        is_active_dev = any(kw in active_title for kw in keywords) or any(p in active_process for p in dev_processes)
         
         manager_keywords = ["auto submitter manager", "auto_submitter", "自动提交一键配置", "自动点击"]
         is_manager_active = any(kw in active_title for kw in manager_keywords) if active_title else False
@@ -437,7 +552,7 @@ def generate_diagnose_report():
         report_lines.append("=== 自动点击与重试工具诊断报告 ===")
         report_lines.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         report_lines.append(f"屏幕物理分辨率: {img.shape[1]}x{img.shape[0]}")
-        report_lines.append(f"当前最前台活动窗口: Title=\"{active_title}\"")
+        report_lines.append(f"当前最前台活动窗口: Title=\"{active_title}\", Process=\"{active_process}\"")
         if active_rect:
             report_lines.append(f"  - 前台窗口范围: Left={active_rect[0]}, Top={active_rect[1]}, Right={active_rect[2]}, Bottom={active_rect[3]}")
         report_lines.append(f"  - 最前台是否属于开发工具白名单: {'是' if is_active_dev else '否'}")
