@@ -207,8 +207,8 @@ def execute_click_with_fallback(btn_info):
     # 第二层：后台静默回车投递
     background_enter(cx, cy)
     
-    # 等待 0.35 秒，等窗口和渲染树更新
-    time.sleep(0.35)
+    # 等待 0.50 秒 (放宽缓冲时间)，确保操作系统有足够的时间刷新窗口状态与截屏树
+    time.sleep(0.50)
     
     # 重新检测该按钮是否依然存在
     recheck_btns = find_blue_buttons()
@@ -245,7 +245,7 @@ def monitor_loop(is_silent=False):
     if not is_silent:
         print("\n[监控] 智能自适应全屏扫描已开启。")
         print("正在持续扫描屏幕以定位 [Submit] 或 [Retry] 按钮...")
-        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口限定 (前台调试豁免)")
+        print("已启用安全双重保险: 任务栏坐标避让 + 前台开发窗口限定 (前台调试与后台静默豁免)")
         print("=" * 60)
         
     last_diagnose_time = 0
@@ -285,16 +285,20 @@ def monitor_loop(is_silent=False):
                         continue
                         
                     # 第二重保险：前台活动窗口约束
-                    # 如果前台是本管理器本身，则予以豁免放行，直接触发点击（解决前台测试黑框挡住焦点窗口的问题）
-                    if is_manager_active:
+                    # 1. 豁免情况一：当前前台活动窗口标题获取为空（隐藏后台Hidden常驻运行时，由于安全隔离常常读取标题为空）
+                    # 2. 豁免情况二：当前前台窗口是小助手控制台本身（方便前台测试调试）
+                    # 3. 校验情况：若前台是开发工具（VS Code / 反重力），按钮必须在窗口范围内，绝对防止偏离点击
+                    # 4. 拦截情况：若前台是明确的第三方非开发窗口（如 Chrome 浏览器，微信等），小助手退避保护，暂时忽略
+                    if not active_title:
                         pass
-                    # 如果用户当前正在反重力/VS Code中编写代码或挂机运行：按钮坐标必须在前台窗口的矩形范围内
+                    elif is_manager_active:
+                        pass
                     elif is_active_dev and active_rect:
                         left, top, right, bottom = active_rect
                         if not (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5):
                             continue
                     else:
-                        # 当前最前台是浏览器、微信等非开发无关窗口，执行安全退避，暂时忽略点击
+                        # 焦点在第三方无关窗口，进入安全退避状态
                         continue
                         
                     # 通过所有安全策略，执行点击
@@ -321,7 +325,7 @@ def monitor_loop(is_silent=False):
                     cx, cy = btn["abs_center"]
                     if cy > (screen_height - 75):
                         taskbar_filtered += 1
-                    elif not is_active_dev and not is_manager_active:
+                    elif active_title and not is_active_dev and not is_manager_active:
                         bg_filtered += 1
                     elif is_active_dev and active_rect:
                         left, top, right, bottom = active_rect
@@ -470,7 +474,7 @@ def generate_diagnose_report():
             report_lines.append(f"  - 是否处于最前台活动开发窗口内: {'是' if in_foreground else '否'}")
             
             # 计算最终点击判定
-            is_valid = geom_error is None and not in_taskbar and (in_foreground or is_manager_active or not is_active_dev)
+            is_valid = geom_error is None and not in_taskbar and (in_foreground or not active_title or is_manager_active or not is_active_dev)
             
             color = (0, 255, 0) if is_valid else (0, 0, 255)
             cv2.rectangle(diagnose_img, (x, y), (x + w, y + h), color, 2)
