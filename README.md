@@ -39,16 +39,28 @@
 当您触发一键诊断时，小助手会输出带红绿框线标记的诊断图像到您的桌面上，帮您秒懂识别状态：
 ![诊断示例](assets/diagnose_example.png)
 
-### 💻 菜单功能说明
-双击运行桌面上的批处理后，即可进入由 Python 渲染的稳定命令行菜单：
-- `[1] 立即启动后台监控服务`：运行完全静默、无任何黑黑命令行窗口的后台常驻服务。
-- `[5] 运行前台测试模式`：直接在当前窗口显示监控日志，方便直观观察检测反应（按 `Ctrl + C` 可退回主菜单）。
-- `[6] 生成一键诊断报告`：在桌面生成标记图 `submitter_diagnose.png` 与分析文本 `submitter_diagnose_report.txt`，供故障排查。
+### 💻 菜单功能与推荐使用教程
+双击运行桌面上的批处理后，即可进入命令行管理器。我们提供了多种模式：
 
-### 📦 部署方法
-- 安装 Python 3.8+ (请务必勾选 Add Python to PATH)。
-- 将本项目的所有文件下载或克隆至本地。
-- 双击运行 **`自动提交一键配置助手.bat`** 即可。初次运行时，小助手会自动检查并静默为您补全 `pyautogui`, `opencv-python`, `pillow` 等依赖。
+> [!IMPORTANT]
+> **🌟 核心推荐：极力建议您使用 `[5] 运行前台测试模式`！**
+> 
+> 虽然小助手提供了后台静默服务（选项 1），但在 Windows 环境下，**选项 [5]（前台测试模式）是最推荐且最稳定的日常使用模式**：
+> - **透明直观**：命令行会实时显示小助手的每次检测、定位和点击动作，能够清晰掌握它的运行状态。
+> - **性能最佳**：前台模式拥有更高的进程优先级和系统截屏树刷新响应速度。
+> - **防冻结设计**：小助手已从底层禁用了 CMD 控制台的 QuickEdit 快速编辑，防止您无意点击命令行窗口导致线程挂起。
+> - **极速退出**：随时可在黑窗口中按 `Ctrl + C` 安全返回主菜单，没有任何残留进程。
+
+* **`[1] 立即启动后台监控服务`**：运行完全静默、无黑黑命令行窗口的后台服务（适合极度洁癖且挂机时间极长的用户）。
+* **`[2] 立即停止后台监控服务`**：关闭后台正在运行的静默监控实例。
+* **`[5] 运行前台测试模式`**：【核心推荐】直接在当前窗口显示监控日志，观察检测反应最直观。
+* **`[6] 生成一键诊断报告`**：在桌面生成标记图 `submitter_diagnose.png` 与分析文本，供排查识别故障。
+
+### 📦 部署与运行方法
+1. 安装 Python 3.8+ (请务必在安装时勾选 **Add Python to PATH**)。
+2. 将本项目的所有文件下载或克隆至本地。
+3. 双击运行 **`自动提交一键配置助手.bat`**。
+4. 初次运行时会静默补全环境依赖，随后即可在弹出的菜单中**输入 `5` 并按回车**开启前台测试监控模式！
 
 ---
 
@@ -77,13 +89,26 @@ This assistant uses **OpenCV Computer Vision with 1:1 physical pixel alignment**
 When running the diagnostic tool, it exports a visual report with green (valid) and red (filtered) bounding boxes to your desktop:
 ![Diagnostic Screenshot](assets/diagnose_example.png)
 
-### 💻 Menu Options Description
+### 💻 Menu Options & Recommendation
 Double-click the batch file to enter the interactive console menu:
-- `[1] Start Background Service`: Runs the monitor silently in the background with no terminal windows visible.
-- `[5] Run Foreground Test Mode`: Starts the monitor inside the current window, printing live detection logs. Press `Ctrl + C` to return to the main menu.
-- `[6] Generate Diagnostic Report`: Generates `submitter_diagnose.png` and `submitter_diagnose_report.txt` on the desktop for debugging.
 
-### 📦 Deployment
-- Install Python 3.8+ (Make sure to check "Add Python to PATH").
-- Clone or download this repository to your local directory.
-- Double-click **`自动提交一键配置助手.bat`**. On first launch, it will check and silently install dependencies like `pyautogui`, `opencv-python`, and `pillow`.
+> [!IMPORTANT]
+> **🌟 Recommendation: Highly recommended to use `[5] Run Foreground Test Mode`!**
+> 
+> Although a silent background service is provided (Option 1), **Option [5] (Foreground Test Mode) is the most stable and visual way for daily coding**:
+> - **Full Visibility**: Prints live `[Locate]`, `[Success]`, and `[Diagnose]` logs in real-time, giving you total awareness.
+> - **Highest Priority**: Foreground terminal execution receives superior CPU scheduling and desktop screenshot refresh rates.
+> - **Freeze-Proof**: Windows Console QuickEdit is automatically disabled by the script to prevent thread freezes caused by accidental clicks.
+> - **Easy Control**: Press `Ctrl + C` anytime in the console to safely return to the main menu.
+
+* **`[1] Start Background Service`**: Runs the monitor silently in the background with no terminal windows visible.
+* **`[2] Stop Background Service`**: Instantly terminates active silent background monitors.
+* **`[5] Run Foreground Test Mode`**: [Highly Recommended] Starts the monitor inside the current terminal with live debug output.
+* **`[6] Generate Diagnostic Report`**: Exports diagnostic data and bounding-box screenshots to your desktop for debugging.
+
+### 📦 Installation & Execution
+1. Install Python 3.8+ (ensure you check **"Add Python to PATH"**).
+2. Clone or download this repository to a local directory.
+3. Double-click **`自动提交一键配置助手.bat`** (first-time launch auto-installs requirements).
+4. In the console menu, **enter `5` and press Enter** to launch the foreground monitoring mode!
+
