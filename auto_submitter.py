@@ -60,6 +60,23 @@ class POINT(ctypes.Structure):
 lower_blue = np.array([85, 40, 40])
 upper_blue = np.array([135, 255, 255])
 
+def disable_quick_edit():
+    """禁用 Windows 控制台的快速编辑模式，防止鼠标点击命令行窗口导致进程被挂起"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        # 获取标准输入句柄
+        STD_INPUT_HANDLE = -10
+        hStdIn = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if hStdIn:
+            mode = wintypes.DWORD()
+            if kernel32.GetConsoleMode(hStdIn, ctypes.byref(mode)):
+                # 禁用 ENABLE_QUICK_EDIT_MODE (0x0040)
+                ENABLE_QUICK_EDIT_MODE = 0x0040
+                new_mode = mode.value & ~ENABLE_QUICK_EDIT_MODE
+                kernel32.SetConsoleMode(hStdIn, new_mode)
+    except Exception:
+        pass
+
 exit_flag = False
 is_paused = False  # 全局暂停标志
 
@@ -270,15 +287,19 @@ def find_blue_buttons(diagnose=False):
 def check_local_blue_exists(cx, cy, w, h):
     """检测屏幕上以 (cx, cy) 为中心，宽高为 (w, h) 的局部区域内是否依然存在蓝色像素"""
     try:
+        screenshot = pyautogui.screenshot()
+        img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        
+        # 扩展一点边界
         pad = 10
         left = max(0, cx - (w // 2) - pad)
         top = max(0, cy - (h // 2) - pad)
-        width = w + 2 * pad
-        height = h + 2 * pad
+        right = min(img.shape[1], cx + (w // 2) + pad)
+        bottom = min(img.shape[0], cy + (h // 2) + pad)
         
-        screenshot = pyautogui.screenshot(region=(left, top, width, height))
-        img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        # 使用 numpy 直接物理像素切片，完美防高 DPI 错位
+        crop = img[top:bottom, left:right]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         
         mask = cv2.inRange(hsv, lower_blue, upper_blue)
         blue_pixel_count = np.sum(mask > 0)
@@ -668,6 +689,7 @@ def show_interactive_menu():
             time.sleep(1.0)
 
 if __name__ == "__main__":
+    disable_quick_edit()
     if len(sys.argv) > 1 and sys.argv[1] == "--service":
         monitor_loop(is_silent=True)
     else:
