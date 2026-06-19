@@ -60,23 +60,6 @@ class POINT(ctypes.Structure):
 lower_blue = np.array([85, 40, 40])
 upper_blue = np.array([135, 255, 255])
 
-def disable_quick_edit():
-    """禁用 Windows 控制台的快速编辑模式，防止鼠标点击命令行窗口导致进程被挂起"""
-    try:
-        kernel32 = ctypes.windll.kernel32
-        # 获取标准输入句柄
-        STD_INPUT_HANDLE = -10
-        hStdIn = kernel32.GetStdHandle(STD_INPUT_HANDLE)
-        if hStdIn:
-            mode = wintypes.DWORD()
-            if kernel32.GetConsoleMode(hStdIn, ctypes.byref(mode)):
-                # 禁用 ENABLE_QUICK_EDIT_MODE (0x0040)
-                ENABLE_QUICK_EDIT_MODE = 0x0040
-                new_mode = mode.value & ~ENABLE_QUICK_EDIT_MODE
-                kernel32.SetConsoleMode(hStdIn, new_mode)
-    except Exception:
-        pass
-
 exit_flag = False
 is_paused = False  # 全局暂停标志
 
@@ -283,7 +266,6 @@ def find_blue_buttons(diagnose=False):
         print(f"[错误] 检索蓝色按钮失败: {e}")
         return None
 
-
 def check_local_blue_exists(cx, cy, w, h):
     """检测屏幕上以 (cx, cy) 为中心，宽高为 (w, h) 的局部区域内是否依然存在蓝色像素"""
     try:
@@ -389,7 +371,6 @@ def monitor_loop(is_silent=False):
                 time.sleep(0.5)
                 continue
             valid_btns = [b for b in all_detected if b["geom_error"] is None]
-
             
             valid_btn_found = False
             if len(valid_btns) > 0:
@@ -493,207 +474,42 @@ def monitor_loop(is_silent=False):
     except Exception:
         pass
 
-def kill_other_instances():
-    """杀掉其它正在运行的监控后台实例"""
-    current_pid = os.getpid()
-    powershell_cmd = (
-        f"Get-CimInstance Win32_Process -Filter \"CommandLine like '%auto_submitter.py%--service%'\" | "
-        f"ForEach-Object {{ if ($_.ProcessId -ne {current_pid}) {{ Stop-Process -Id $_.ProcessId -Force }} }}"
-    )
-    subprocess.run(["powershell", "-Command", powershell_cmd], capture_output=True)
-
-def start_background_service():
-    """启动后台静默进程"""
-    kill_other_instances()
-    script_path = os.path.abspath(__file__)
-    cmd = f"Start-Process python -ArgumentList '-u \"{script_path}\" --service' -WindowStyle Hidden"
-    subprocess.run(["powershell", "-Command", cmd], capture_output=True)
-    print("\n[成功] 自动提交服务已成功在后台启动！")
-    print("       (它将在后台静默工作，不打扰您的正常操作。)")
-    time.sleep(1.5)
-
-def stop_background_service():
-    """关闭后台进程"""
-    kill_other_instances()
-    print("\n[成功] 自动提交后台监控服务已成功关闭！")
-    time.sleep(1.5)
-
-def set_startup(enable=True):
-    """设置或取消开机自动启动"""
-    startup_file = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "auto_submit_start.bat")
-    if enable:
-        script_path = os.path.abspath(__file__)
-        content = (
-            "@echo off\n"
-            "chcp 65001 > nul\n"
-            f'powershell -Command "Start-Process python -ArgumentList \'-u \\"{script_path}\\" --service\' -WindowStyle Hidden"\n'
-        )
-        try:
-            with open(startup_file, "w", encoding="utf-8") as f:
-                f.write(content)
-            print("\n[成功] 开机自启配置成功！")
-            print("       (以后每次开机登录 Windows，该服务都将自动在后台挂起工作。)")
-        except Exception as e:
-            print(f"\n[错误] 开机自启配置失败: {e}")
-    else:
-        if os.path.exists(startup_file):
-            try:
-                os.remove(startup_file)
-                print("\n[成功] 已成功移除了开机自启配置。")
-            except Exception as e:
-                print(f"\n[错误] 移除开机自启配置失败: {e}")
-        else:
-            print("\n[提示] 之前并未配置过开机自启。")
-    time.sleep(1.5)
-
-def generate_diagnose_report():
-    """一键生成屏幕诊断分析报告及标记后的截图"""
-    print("\n[诊断] 正在生成屏幕诊断报告，请确保此时屏幕上正显示着 [Submit] 或 [Retry] 按钮...")
+def disable_quick_edit():
+    """禁用 Windows 控制台的快速编辑模式，防止鼠标点击命令行窗口导致进程被挂起"""
     try:
-        screenshot = pyautogui.screenshot()
-        img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        
-        mask = cv2.inRange(hsv, lower_blue, upper_blue)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        active_rect, active_title, active_process = get_active_window_rect_title_and_process()
-        keywords = ["visual studio code", "vscode", "cursor", "windsurf", "antigravity", "反重力", "自动提交"]
-        dev_processes = ["code.exe", "cursor.exe", "windsurf.exe", "antigravity.exe"]
-        
-        is_active_dev = any(kw in active_title for kw in keywords) or any(p in active_process for p in dev_processes)
-        
-        manager_keywords = ["auto submitter manager", "auto_submitter", "自动提交一键配置", "自动点击"]
-        is_manager_active = any(kw in active_title for kw in manager_keywords) if active_title else False
-        
-        diagnose_img = img.copy()
-        screen_width, screen_height = pyautogui.size()
-        
-        report_lines = []
-        report_lines.append("=== 自动点击与重试工具诊断报告 ===")
-        report_lines.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        report_lines.append(f"屏幕物理分辨率: {img.shape[1]}x{img.shape[0]}")
-        report_lines.append(f"当前最前台活动窗口: Title=\"{active_title}\", Process=\"{active_process}\"")
-        if active_rect:
-            report_lines.append(f"  - 前台窗口范围: Left={active_rect[0]}, Top={active_rect[1]}, Right={active_rect[2]}, Bottom={active_rect[3]}")
-        report_lines.append(f"  - 最前台是否属于开发工具白名单: {'是' if is_active_dev else '否'}")
-        report_lines.append(f"  - 最前台是否为本小助手管理器: {'是 (享受前台测试特殊豁免)' if is_manager_active else '否'}")
-            
-        report_lines.append(f"\n检测到符合 HSV 蓝色区间的色块数量: {len(contours)}")
-        
-        match_count = 0
-        for idx, cnt in enumerate(contours):
-            x, y, w, h = cv2.boundingRect(cnt)
-            aspect_ratio = float(w) / h
-            area = w * h
-            cx = x + (w // 2)
-            cy = y + (h // 2)
-            
-            geom_error = check_geometry(w, h, aspect_ratio, area)
-            
-            # 安全逻辑检测
-            in_taskbar = cy > (screen_height - 75)
-            in_foreground = False
-            if active_rect:
-                left, top, right, bottom = active_rect
-                in_foreground = (left - 5 <= cx <= right + 5 and top - 5 <= cy <= bottom + 5)
-                
-            report_lines.append(f"\n[色块 #{idx+1}]")
-            report_lines.append(f"  - 坐标: 左上角 ({x}, {y})，中心点 ({cx}, {cy})")
-            report_lines.append(f"  - 数据: 宽度={w}, 高度={h}, 宽高比={aspect_ratio:.2f}, 面积={area}")
-            if geom_error:
-                report_lines.append(f"  - 几何过滤: 失败 (原因: {geom_error})")
-            else:
-                report_lines.append("  - 几何过滤: 通过")
-                
-            report_lines.append(f"  - 是否处于底部系统任务栏区域: {'是 (已被拦截安全排他)' if in_taskbar else '否'}")
-            report_lines.append(f"  - 是否处于最前台活动开发窗口内: {'是' if in_foreground else '否'}")
-            
-            # 计算最终点击判定
-            is_valid = geom_error is None and not in_taskbar and (in_foreground or not active_title or is_manager_active or not is_active_dev)
-            
-            color = (0, 255, 0) if is_valid else (0, 0, 255)
-            cv2.rectangle(diagnose_img, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(diagnose_img, f"#{idx+1} {w}x{h} {'OK' if is_valid else 'ERR'}", (x, max(y - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            
-            if is_valid:
-                match_count += 1
-                
-        report_lines.append(f"\n最终通过所有安全双重保险的可用按钮数量: {match_count}")
-        
-        desktop_dir = os.path.join(os.environ["USERPROFILE"], "Desktop")
-        report_file = os.path.join(desktop_dir, "submitter_diagnose_report.txt")
-        img_file = os.path.join(desktop_dir, "submitter_diagnose.png")
-        
-        with open(report_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(report_lines))
-            
-        cv2.imwrite(img_file, diagnose_img)
-        
-        print(f"\n[成功] 诊断完成！已在桌面生成以下两个诊断文件：")
-        print(f"  1. 诊断报告: {report_file}")
-        print(f"  2. 标记截图: {img_file}")
-        print(f"  (请您打开诊断报告查看，或者告知 AI 助手诊断结果！)")
-    except Exception as e:
-        print(f"\n[错误] 生成诊断报告失败: {e}")
-    input("\n按回车键返回主菜单...")
+        kernel32 = ctypes.windll.kernel32
+        # 获取标准输入句柄
+        STD_INPUT_HANDLE = -10
+        hStdIn = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if hStdIn:
+            mode = wintypes.DWORD()
+            if kernel32.GetConsoleMode(hStdIn, ctypes.byref(mode)):
+                # 禁用 ENABLE_QUICK_EDIT_MODE (0x0040)
+                ENABLE_QUICK_EDIT_MODE = 0x0040
+                new_mode = mode.value & ~ENABLE_QUICK_EDIT_MODE
+                kernel32.SetConsoleMode(hStdIn, new_mode)
+    except Exception:
+        pass
 
-def show_interactive_menu():
-    """交互菜单主循环"""
-    while True:
-        os.system('cls')
-        print("=" * 60)
-        print("      自动点击与重试工具 (Auto Submitter 反重力专属版)")
-        print("============================================================")
-        print("  已启用: [纯计算机视觉自适应检测] (无需任何截图和配置)")
-        print("  已限制: [仅在反重力 / VS Code 活动窗口边界内激活] (100%防误触)")
-        print("  支持类型: [Submit 授权弹窗] 及 [Retry 报错弹窗]")
-        print("  安全技术: 物理像素1:1对齐 + 后台静默投递 + 键盘物理回车保底")
-        print("============================================================")
-        print("  [1] 立即启动后台监控服务 (完全静默 / 无黑窗后台运行)")
-        print("  [2] 立即停止后台监控服务 (关闭正在运行 we 后台服务)")
-        print("  [3] 开启开机自动启动 (每次开机后自动在后台挂起监控)")
-        print("  [4] 关闭开机自动启动 (移除开机自启配置)")
-        print("  [5] 运行前台测试模式 (当前窗口直接运行并显示检测日志)")
-        print("  [6] 生成一键诊断报告 (当无法识别时在桌面输出分析图文)")
-        print("  [7] 退出管理器")
-        print("============================================================")
-        
-        choice = input("请输入您的选项 [1-7] 并按回车: ").strip()
-        
-        if choice == "1":
-            start_background_service()
-        elif choice == "2":
-            stop_background_service()
-        elif choice == "3":
-            set_startup(enable=True)
-        elif choice == "4":
-            set_startup(enable=False)
-        elif choice == "5":
-            os.system('cls')
-            print("=" * 60)
-            print("                  前台调试与测试运行模式")
-            print("============================================================")
-            print("  此模式直接在当前窗口显示监控日志，方便您观察是否成功检测到按钮。")
-            print("  测试方法: 触发弹窗后，观察此处是否打印 [定位] 等日志，按钮是否消掉。")
-            print("  随时按 [Ctrl + C] 即可安全退出测试模式并返回主菜单。")
-            print("============================================================")
-            monitor_loop(is_silent=False)
-        elif choice == "6":
-            generate_diagnose_report()
-        elif choice == "7":
-            print("\n已退出管理器。")
-            sys.exit(0)
-        else:
-            print("\n[错误] 输入无效，请输入 1 到 7 之间的数字！")
-            time.sleep(1.0)
+def associate_interactive_desktop():
+    """将当前线程与交互式窗口站 winsta0 和桌面 default 关联，解决非交互环境下的 screen grab failed 报错"""
+    try:
+        user32 = ctypes.windll.user32
+        hWinSta = user32.OpenWindowStationW("winsta0", False, 0x37F)
+        if hWinSta:
+            if user32.SetProcessWindowStation(hWinSta):
+                hDesk = user32.OpenDesktopW("default", 0, False, 0x1FF)
+                if hDesk:
+                    user32.SetThreadDesktop(hDesk)
+                    return True
+    except Exception:
+        pass
+    return False
 
 if __name__ == "__main__":
     disable_quick_edit()
-    if len(sys.argv) > 1 and sys.argv[1] == "--service":
-        monitor_loop(is_silent=True)
-    else:
-        try:
-            show_interactive_menu()
-        except KeyboardInterrupt:
-            print("\n已安全退出管理器。")
+    associate_interactive_desktop()
+    try:
+        monitor_loop(is_silent=False)
+    except KeyboardInterrupt:
+        print("\n已安全退出监控。")
